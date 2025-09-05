@@ -1,22 +1,30 @@
-import {API, Categories, Characteristic, DynamicPlatformPlugin, Logger, PlatformAccessory, PlatformConfig, Service} from 'homebridge';
-import {NexxApiClient} from '@jontg/nexx-garage-sdk';
+import {
+  API,
+  Categories,
+  Characteristic,
+  DynamicPlatformPlugin,
+  Logger,
+  PlatformAccessory,
+  PlatformConfig,
+  Service,
+} from 'homebridge';
+import { NexxApiClient } from '@jontg/nexx-garage-sdk';
 
-import {PLATFORM_NAME, PLUGIN_NAME} from './settings';
-import {NXG200} from './nxg200';
+import { PLATFORM_NAME, PLUGIN_NAME } from './settings';
+import { NXG200 } from './nxg200';
 
 /**
  * HomebridgePlatform
- * This class is the main constructor for your plugin, this is where you should
- * parse the user config and discover/register accessories with Homebridge.
+ * Parses user config and discovers/registers accessories with Homebridge.
  */
 export class NexxHomebridgePlatform implements DynamicPlatformPlugin {
   public readonly Service: typeof Service = this.api.hap.Service;
   public readonly Characteristic: typeof Characteristic = this.api.hap.Characteristic;
 
-  // this is used to track restored cached accessories
+  // cache of restored accessories
   public readonly accessories: PlatformAccessory[] = [];
 
-  public nexxApiClient : NexxApiClient;
+  public nexxApiClient: NexxApiClient;
 
   constructor(
     public readonly log: Logger,
@@ -26,82 +34,99 @@ export class NexxHomebridgePlatform implements DynamicPlatformPlugin {
     this.log.debug('Finished initializing platform:', this.config.name);
     this.nexxApiClient = new NexxApiClient(config.auth);
 
-    // When this event is fired it means Homebridge has restored all cached accessories from disk.
-    // Dynamic Platform plugins should only register new accessories after this event was fired,
-    // in order to ensure they weren't added to homebridge already. This event can also be used
-    // to start discovery of new accessories.
     this.api.on('didFinishLaunching', async () => {
-      log.debug('Executed didFinishLaunching callback');
-      // run the method to discover / register your devices as accessories
+      this.log.debug('Executed didFinishLaunching callback');
       await this.discoverDevices();
     });
   }
 
   /**
-   * This function is invoked when homebridge restores cached accessories from disk at startup.
-   * It should be used to setup event handlers for characteristics and update respective values.
+   * Invoked when homebridge restores cached accessories at startup.
    */
   configureAccessory(accessory: PlatformAccessory) {
     this.log.info('Loading accessory from cache:', accessory.displayName);
-
-    // add the restored accessory to the accessories cache so we can track if it has already been registered
     this.accessories.push(accessory);
   }
 
   /**
-   * This is an example method showing how to register discovered accessories.
-   * Accessories must only be registered once, previously created accessories
-   * must not be registered again to prevent "duplicate UUID" errors.
+   * Discover devices via Nexx API and register them.
    */
   async discoverDevices() {
     const devices = await this.nexxApiClient.getDevices();
     const discoveredDeviceIds: string[] = [];
 
-    // loop over the discovered devices and register each one if it has not already been registered
-    for (const device of devices) {
-      if (device.DeviceType !== 'NexxGarage') {
-        this.log.info('Skipping device:', JSON.stringify(device));
+    // read options
+    const includeGate =
+      !!(this.config && (this.config as any).options && (this.config as any).options.includeGate);
+    const treatGateAsGarage =
+      (this.config && (this.config as any).options && (this.config as any).options.treatGateAsGarage) !== false;
+
+    for (const device of devices as any[]) {
+      const isGarage =
+        device.DeviceType === 'NexxGarage' ||
+        ['NXG200', 'NXG300'].includes(device.ProductCode);
+
+      const isGate =
+        device.DeviceType === 'NexxGate' ||
+        device.ProductCode === 'NXGT1';
+
+      if (!isGarage && !(includeGate && isGate)) {
+        // unchanged behavior for other/unknown devices
+        this.log.info('Skipping device (unsupported):', JSON.stringify({
+          DeviceId: device.DeviceId,
+          DeviceType: device.DeviceType,
+          ProductCode: device.ProductCode,
+          DeviceNickName: device.DeviceNickName,
+        }));
         continue;
       }
 
-      // generate a unique id for the accessory this should be generated from
-      // something globally unique, but constant, for example, the device serial
-      // number or MAC address
+      // Log the accepted device
+      this.log.info('Registering device:', JSON.stringify({
+        DeviceId: device.DeviceId,
+        DeviceType: device.DeviceType,
+        ProductCode: device.ProductCode,
+        DeviceNickName: device.DeviceNickName,
+      }));
+
+      // Generate a stable UUID per device
       const uuid = this.api.hap.uuid.generate(device.DeviceId);
       discoveredDeviceIds.push(uuid);
 
-      // see if an accessory with the same uuid has already been registered and restored from
-      // the cached devices we stored in the `configureAccessory` method above
-      const existingAccessory = this.accessories.find(accessory => accessory.UUID === uuid);
+      // Try to find existing accessory from cache
+      const existingAccessory = this.accessories.find(a => a.UUID === uuid);
+
+      // Decide the HomeKit category. For gates we still use GarageDoorOpener
+      // so the UX (Siri / CarPlay) is ideal.
+      const category: Categories =
+        isGate && treatGateAsGarage
+          ? Categories.GARAGE_DOOR_OPENER
+          : Categories.GARAGE_DOOR_OPENER; // same for garages
 
       if (existingAccessory) {
-        // the accessory already exists
+        // Update cached accessory
         this.log.info('Restoring existing accessory from cache:', existingAccessory.displayName);
-
         existingAccessory.context.device = device;
         this.api.updatePlatformAccessories([existingAccessory]);
 
         new NXG200(this, existingAccessory);
       } else {
-        // the accessory does not yet exist, so we need to create it
+        // Create and register new accessory
         this.log.info('Adding new accessory:', device.DeviceNickName);
+        const accessory = new this.api.platformAccessory(device.DeviceNickName, uuid, category);
 
-        // create a new accessory
-        const accessory = new this.api.platformAccessory(device.DeviceNickName, uuid, Categories.GARAGE_DOOR_OPENER);
-
-        // store a copy of the device object in the `accessory.context`
-        // the `context` property can be used to store any data about the accessory you may need
+        // Stash the raw device so handlers can use full metadata
         accessory.context.device = device;
 
-        // create the accessory handler for the newly create accessory
-        // this is imported from `nxg200.ts`
+        // Create handler (NXG200 works for both garage & gate because
+        // we expose the same GarageDoorOpener service)
         new NXG200(this, accessory);
 
-        // link the accessory to your platform
         this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
       }
     }
 
+    // Unregister accessories that are no longer discovered
     for (const accessory of this.accessories) {
       if (discoveredDeviceIds.indexOf(accessory.UUID) === -1) {
         this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
