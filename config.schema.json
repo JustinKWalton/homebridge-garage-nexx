@@ -40,6 +40,29 @@
           "password",
           "clientId"
         ]
+      },
+      "options": {
+        "title": "Options",
+        "type": "object",
+        "properties": {
+          "includeGate": {
+            "title": "Include NexxGate (NXGT1)",
+            "type": "boolean",
+            "default": true,
+            "description": "Allow devices with DeviceType=NexxGate / ProductCode=NXGT1 to be registered."
+          },
+          "treatGateAsGarage": {
+            "title": "Treat Gate As Garage",
+            "type": "boolean",
+            "default": true,
+            "description": "Expose gates as Garage Door in HomeKit for Siri/CarPlay compatibility."
+          },
+          "deviceId": {
+            "title": "Device ID (optional)",
+            "type": "string",
+            "description": "If set, only register this device (e.g., b7c3059492894f31ad5ad9b818419e17)."
+          }
+        }
       }
     }
   }
